@@ -1,4 +1,4 @@
-// Rotas da API (/api/*). Respostas JSON; rotas desconhecidas -> 404 JSON.
+import { timingSafeEqual } from 'node:crypto';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import { NAME_MAX, parseAppearanceParts, parseCharacterName, parseSeed } from '../../shared/appearance';
 import type { AccessInfo, AgentInfo, ModSummary, OfficeSnapshot, SourceInfo, UpdateStatus } from '../../shared/types';
@@ -22,6 +22,7 @@ import { AUDIO_BODY_MAX, type DictationService } from '../dictation/dictation';
 import type { DeliveryIndex } from '../deliveries/deliveries';
 import type { FileFetcher } from '../deliveries/fetcher';
 import { HOST_WAIT_MS } from '../host-wait';
+import type { AgentesRegistry } from '../sources/agentes';
 
 export interface ApiDeps {
   office: Office;
@@ -89,6 +90,10 @@ export interface ApiDeps {
    * HABBLAUD_REMOTE_ALLOW libera. Requisição remota nunca vale pelo Host: só pelo que `allows` liberar.
    */
   remote?: { is(req: IncomingMessage): boolean; allows(feature: RemoteFeature): boolean };
+  /** Registro de agentes fixos da fonte n8n. */
+  agentes?: AgentesRegistry;
+  /** Token Bearer para autenticar POST /api/agentes/evento. Se ausente, tenta process.env.HABBLAUD_AGENTES_TOKEN. */
+  agentesToken?: string;
 }
 
 /** GET /api/agents/:id/terminal (ids nunca contêm '/'). */
@@ -469,6 +474,74 @@ export function createApiHandler(deps: ApiDeps): (req: IncomingMessage, res: Ser
       else if (!trusted(req) || (!deps.inDocker && !isLoopbackAddress(req.socket.remoteAddress))) {
         sendJson(res, 403, { error: denied(req, tr('eventos do Codex só são aceitos pelo próprio computador (http://localhost ou http://127.0.0.1)')) });
       } else handleCodexEvent(req, res, { live: deps.codexLive, entries: () => accounts.entriesOf('codex') }).catch((err) => fail(res, err));
+      return true;
+    }
+    if (path === '/api/agentes/evento') {
+      if (method !== 'POST') {
+        methodNotAllowed(res, 'POST');
+        return true;
+      }
+      const token = (deps.agentesToken ?? process.env.HABBLAUD_AGENTES_TOKEN)?.trim();
+      if (!token) {
+        sendJson(res, 503, { error: tr('endpoint desativado (HABBLAUD_AGENTES_TOKEN não configurado)') });
+        return true;
+      }
+      const auth = req.headers['authorization'];
+      if (!auth || !auth.startsWith('Bearer ')) {
+        sendJson(res, 401, { error: tr('cabeçalho Authorization: Bearer <token> obrigatório') });
+        return true;
+      }
+      const provided = auth.slice('Bearer '.length).trim();
+      const tokenBuf = Buffer.from(token);
+      const providedBuf = Buffer.from(provided);
+      if (tokenBuf.length !== providedBuf.length || !timingSafeEqual(tokenBuf, providedBuf)) {
+        sendJson(res, 401, { error: tr('token inválido') });
+        return true;
+      }
+      readJson(req)
+        .then((raw) => {
+          if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
+            sendJson(res, 400, { error: tr('esperado objeto JSON') });
+            return;
+          }
+          const body = raw as Record<string, unknown>;
+          const agenteId = body.agente;
+          const status = body.status;
+          const atividade = body.atividade;
+          const esperandoPor = body.esperandoPor;
+
+          if (typeof agenteId !== 'string' || !agenteId.trim()) {
+            sendJson(res, 400, { error: tr('campo "agente" obrigatório') });
+            return;
+          }
+          if (status !== 'working' && status !== 'idle' && status !== 'waiting') {
+            sendJson(res, 400, { error: tr('status inválido: esperado working, idle ou waiting') });
+            return;
+          }
+          if (typeof atividade !== 'string' || !atividade.trim()) {
+            sendJson(res, 400, { error: tr('campo "atividade" obrigatório') });
+            return;
+          }
+          if (esperandoPor !== undefined && typeof esperandoPor !== 'string') {
+            sendJson(res, 400, { error: tr('campo "esperandoPor" deve ser texto') });
+            return;
+          }
+          if (!deps.agentes?.get(agenteId.trim())) {
+            sendJson(res, 400, { error: tr('agente desconhecido: {0}', [agenteId]) });
+            return;
+          }
+          deps.agentes.applyEvent({
+            agente: agenteId.trim(),
+            status,
+            atividade: atividade.trim(),
+            esperandoPor: typeof esperandoPor === 'string' ? esperandoPor.trim() : undefined,
+          });
+          sendJson(res, 200, { ok: true });
+        })
+        .catch((err) => {
+          if (err instanceof HttpError) sendJson(res, 400, { error: err.message });
+          else sendJson(res, 400, { error: tr('JSON inválido') });
+        });
       return true;
     }
     if (path === '/api/spawn' || path.startsWith('/api/spawn/')) {

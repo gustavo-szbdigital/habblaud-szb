@@ -104,6 +104,8 @@ export interface MainInput {
   startedAt: number;
   status: AgentStatus;
   waitingFor?: string;
+  name?: string;
+  look?: 'f' | 'm';
 }
 
 export interface SubInput {
@@ -324,7 +326,9 @@ export class Office {
     const chosen = this.roomCharacter(roomId, p.id, p.sessionId);
     // A mesma sessão retomada noutro processo (ex.: "Assumir aqui") mantém o nome, mesmo com o processo antigo
     // ainda saindo do escritório.
-    const person = chosen ?? this.deps.names.assign(p.sessionId, this.takenNames(undefined, p.sessionId));
+    const person = p.name
+      ? { name: p.name, look: p.look ?? 'm' }
+      : (chosen ?? this.deps.names.assign(p.sessionId, this.takenNames(undefined, p.sessionId)));
     const info: AgentInfo = {
       id: p.id,
       kind: 'main',

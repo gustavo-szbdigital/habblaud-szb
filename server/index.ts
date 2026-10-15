@@ -37,6 +37,7 @@ import { ClaudeWatcher } from './sources/watcher';
 import { discoverCodexDirs } from './sources/codex/accounts';
 import { CodexHistory } from './sources/codex/history';
 import { CodexSource } from './sources/codex/source';
+import { AgentesRegistry } from './sources/agentes';
 import { createBuildReader } from './build';
 import { UpdateChecker } from './updates/checker';
 import { tr } from '../shared/i18n';
@@ -70,7 +71,7 @@ const roomAliases = new RoomAliases(join(config.dataDir, 'rooms.json'));
 roomAliases.load();
 
 // Office, contas e fontes de agentes se referenciam (avisos de mudança / fontes): ligação tardia.
-const late: { office?: Office; agents?: SourceSet; permissions?: PermissionRegistry; messages?: MessageRegistry; ptys?: PtyManager; ptyOff?: string } = {};
+const late: { office?: Office; agents?: SourceSet; agentes?: AgentesRegistry; permissions?: PermissionRegistry; messages?: MessageRegistry; ptys?: PtyManager; ptyOff?: string } = {};
 // Versão nova: consulta a release mais recente no GitHub a cada 6 h (HABBLAUD_UPDATE_CHECK=0 desliga).
 const updates = new UpdateChecker({
   current: config.version,
@@ -95,7 +96,7 @@ const office = new Office({
   build: config.dev ? undefined : createBuildReader(config.rootDir),
   startedAt,
   accounts: (sessions) => accounts.list(sessions),
-  sources: () => late.agents?.sources() ?? [],
+  sources: () => [...(late.agents?.sources() ?? []), ...(late.agentes?.sources() ?? [])],
   accountName: (id) => accounts.find(id)?.detected.name,
   terminal: config.terminal,
   permissions: () => late.permissions?.snapshot() ?? new Map(),
@@ -114,8 +115,11 @@ if (codex) agents.add(codex);
 // Eventos dos hooks do Codex (POST /api/codex/events, mod/habblaud-codex/hook.mjs): vão para a fonte do Codex ao vivo
 // (CodexLive); sem ela (nenhuma pasta do Codex ou HABBLAUD_CODEX=0) a rota responde {ok: false}.
 const codexLive: CodexLive | undefined = codex;
+const agentes = new AgentesRegistry({ dataDir: config.dataDir, office });
+agentes.load();
 late.office = office;
 late.agents = agents;
+late.agentes = agentes;
 // Página que pode responder pelo escritório: Host local na porta local; na remota, só com permissions liberado.
 const hub = new Hub(office, {
   canAnswer: (req) => (isRemoteRequest(req) ? !!config.remote?.allow.has('permissions') : isLoopbackHost(req.headers.host)),
@@ -254,6 +258,7 @@ late.ptys = ptys;
 late.ptyOff = ptyOff;
 
 if (config.demo) office.setDemo(true);
+agentes.start();
 // As fontes síncronas (a do Claude Code) terminam o boot aqui, antes de o hub começar a transmitir.
 void agents.start();
 accounts.start();
@@ -285,7 +290,9 @@ const api = createApiHandler({
   office,
   hub,
   accounts,
-  sources: () => agents.sources(),
+  sources: () => [...agents.sources(), ...agentes.sources()],
+  agentes,
+  agentesToken: config.agentesToken,
   version: config.version,
   inDocker: config.inDocker,
   terminal: config.terminal,

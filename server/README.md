@@ -90,6 +90,7 @@ festa) ou 10 min. Push só avisa. O mesmo CI visto de novo em 2 min não repete 
 | `GET /api/messages/:id` | (página) situação da mensagem (`OutboxMessage`: `queued` \| `sent` \| `delivered` \| `failed`) |
 | `POST /api/mod/inbox` | (plugin `habblaud-mensagens`) `{session, account?}`: marca a presença da sessão e entrega `{messages: InboxMessage[]}` |
 | `POST /api/mod/inbox/ack` | (plugin) `{session, results: [{id, ok, error?}]}`: confirma cada mensagem entregue (ou a falha) |
+| `POST /api/agentes/evento` | Atualiza status e atividade de um agente fixo da fonte n8n (`{agente, status, atividade, esperandoPor?}`); protegido por token Bearer |
 
 O snapshot (SSE e `GET /api/snapshot`) leva só as últimas 8 atividades de cada agente em `recent`; o histórico
 de até 200 (inclusive o começo de transcripts longos, lido em segundo plano) vem de `GET /api/agents/:id`.
@@ -354,6 +355,47 @@ do Codex levam `provider: 'codex'` (ausente = Claude Code). Ids: `<conta>:<threa
   `/ack` (mesma trava das mensagens). `canMessage` = há entregador (binário achado, ou auxiliar visto há até 10 s).
   Retorno 0 = entrou na fila da sessão (`delivered`); o Codex consome a fila a cada ~10 s, quando a sessão fica ociosa.
 
+## Agentes externos (n8n)
+
+Para cenários onde o Habblaud roda em uma VPS ou ambiente sem Claude Code ou Codex, o servidor mantém um registro de agentes fixos em `<HABBLAUD_DATA_DIR>/agentes.json` (padrão: `~/.habblaud/agentes.json`), persistido entre reinícios.
+
+Agentes iniciais registrados:
+- `gestor-trafego` ("Gestor de Tráfego", sala `marketing`)
+- `redator` ("Redator", sala `marketing`)
+- `designer` ("Designer", sala `marketing`)
+- `seo` ("SEO", sala `marketing`)
+
+Todos iniciam com status `idle` e aparecem em `/api/snapshot` mesmo sem nenhuma sessão aberta.
+
+### Endpoint de eventos: `POST /api/agentes/evento`
+
+Atualiza o status e a atividade atual de um agente, mantém o histórico recente em `recent` e transmite as alterações via Server-Sent Events (SSE) para os clientes conectados.
+
+**Autenticação:**
+- Exige o header `Authorization: Bearer <token>`, onde `<token>` deve coincidir com a variável de ambiente `HABBLAUD_AGENTES_TOKEN`.
+- Se a variável `HABBLAUD_AGENTES_TOKEN` não estiver definida, o endpoint responde `503` (desativado).
+- Respeita as proteções de borda e o cabeçalho `Host` permitido (`HABBLAUD_ALLOWED_HOSTS`).
+
+**Exemplo com curl:**
+```bash
+curl -X POST http://127.0.0.1:4747/api/agentes/evento \
+  -H "Authorization: Bearer seu-token-aqui" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "agente": "gestor-trafego",
+    "status": "working",
+    "atividade": "Otimizando campanha no Google Ads",
+    "esperandoPor": "aprovação do orçamento"
+  }'
+```
+
+**Respostas:**
+- `200 { "ok": true }` em caso de sucesso.
+- `400 { "error": "..." }` para JSON inválido, corpo malformado, status não permitido ou agente desconhecido.
+- `401 { "error": "..." }` para token ausente ou inválido.
+- `405 { "error": "..." }` para métodos que não sejam `POST` (header `Allow: POST`).
+- `503 { "error": "..." }` quando a variável `HABBLAUD_AGENTES_TOKEN` não estiver configurada no servidor.
+
 ## Variáveis de ambiente
 
 | Variável | Padrão | Uso |
@@ -376,6 +418,7 @@ do Codex levam `provider: 'codex'` (ausente = Claude Code). Ids: `<conta>:<threa
 | `HABBLAUD_ACCOUNTS` | — | JSON com metadados das contas vindos do host (Docker): `[{id, configDir, mountDir, short, name, email, organization, plan, color, cachedUsage}]`, casados por `id`, `mountDir` ou `configDir` |
 | `HABBLAUD_USAGE_DIR` | `~/.habblaud/usage` (Docker: `/usage`) | pasta do uso capturado pelo tap de statusline ou pelo mod do Claude Code, relida a cada 5 s |
 | `HABBLAUD_ALLOWED_HOSTS` | — | nomes extras aceitos no `Host`/`Origin` (vírgula); `localhost`, `*.localhost` e IPs sempre valem |
+| `HABBLAUD_AGENTES_TOKEN` | — | token Bearer para autenticar eventos em `POST /api/agentes/evento` (quando ausente, o endpoint responde 503) |
 
 No hook de permissão (ambiente do Claude Code; os argumentos `--port`/`--timeout` gravados pelo instalador têm
 preferência): `HABBLAUD_PORT` (porta do Habblaud, padrão `4747`), `HABBLAUD_PERMISSION_TIMEOUT` (segundos de espera

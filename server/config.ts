@@ -56,6 +56,8 @@ export interface ServerConfig {
   remote?: RemoteConfig;
   /** Por que o acesso remoto ficou desligado quando as variáveis estão incompletas. */
   remoteWarning?: string;
+  /** Token de autenticação Bearer para o endpoint POST /api/agentes/evento. */
+  agentesToken?: string;
 }
 
 export function isTruthy(v: string | undefined): boolean {
@@ -178,5 +180,6 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env, argv: string[] 
     codex: !env.HABBLAUD_CODEX?.trim() || isTruthy(env.HABBLAUD_CODEX),
     remote: remote.config,
     remoteWarning: remote.warning,
+    agentesToken: env.HABBLAUD_AGENTES_TOKEN?.trim() || undefined,
   };
 }
